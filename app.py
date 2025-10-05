@@ -1,192 +1,240 @@
 """
-app.py — Simple CLI app for CRUD on 'staff' table.
-All DB work is in db.py. This file just handles user I/O.
+app.py — Универсальный CLI для работы с любой таблицей в БД.
 
-Commands:
-  create            -> add a staff record
-  list              -> list all staff
-  get <id>          -> get a staff by id
-  update <id>       -> update a staff by id (press Enter to keep a field)
-  delete <id>       -> delete a staff by id (asks to confirm)
-  query             -> run the prepared complex SELECT
-  exit              -> quit
+Команды:
+  tables                      -> список таблиц
+  describe <table>            -> список столбцов и типов
+  list <table>                -> показать первые 100 строк таблицы
+  get <table> <id>            -> получить строку по первичному ключу
+  create <table>              -> создать строку (спросит значения полей)
+  update <table> <id>         -> обновить строку по PK (покажет текущие значения)
+  delete <table> <id>         -> удалить строку по PK (подтверждение)
+  query <table>               -> пример сложного SELECT (если есть role/hired_on)
+  help / exit
 """
 
+import sys
+import db
 from datetime import datetime
-import db  # our helper module
 
 def print_row(row):
-    """Pretty-print one staff row."""
     if not row:
         print("No data.")
         return
-    print(f"[{row['staff_id']}] {row['full_name']} | {row['role']} | {row['email']} | {row['phone']} | {row['hired_on']}")
-
-def cmd_create():
-    print("Create new staff record:")
-    full_name = input("  Enter full name (required): ").strip()
-    role = input("  Enter role (e.g., intern/manager): ").strip()
-    email = input("  Enter email: ").strip()
-    phone = input("  Enter phone: ").strip()
-    hired_on_str = input("  Enter hired_on (YYYY-MM-DD): ").strip()
-
-    if not full_name or not role or not email or not hired_on_str:
-        print("Error: full_name, role, email, hired_on are required.")
-        return
-
-    try:
-        hired_on = datetime.strptime(hired_on_str, "%Y-%m-%d").date()
-    except ValueError:
-        print("Error: hired_on must be in format YYYY-MM-DD.")
-        return
-
-    try:
-        new_row = db.create_staff(full_name, role, email, phone, hired_on)
-        print("Created:")
-        print_row(new_row)
-    except Exception as e:
-        print("Create failed:", e)
-
-def cmd_list():
-    rows = db.list_staff()
-    if not rows:
-        print("No staff yet.")
+    # row может быть dict (RealDictCursor)
+    if isinstance(row, dict):
+        items = [f"{k}={v}" for k, v in row.items()]
+        print(", ".join(items))
     else:
-        for r in rows:
-            print_row(r)
+        print(row)
+
+def cmd_tables():
+    tables = db.list_tables()
+    if not tables:
+        print("No tables found.")
+    else:
+        print("Tables:")
+        for t in tables:
+            print(" -", t)
+
+def cmd_describe(parts):
+    if len(parts) < 2:
+        print("Usage: describe <table>")
+        return
+    table = parts[1]
+    cols = db.get_table_columns(table)
+    if not cols:
+        print("Table not found or no columns.")
+        return
+    print(f"Columns in {table}:")
+    for name, dtype, nullable in cols:
+        print(f" - {name} : {dtype} (nullable={nullable})")
+    pk = db.get_primary_key_column(table)
+    print("Primary key:", pk)
+
+def cmd_list(parts):
+    if len(parts) < 2:
+        print("Usage: list <table>")
+        return
+    table = parts[1]
+    rows = db.list_rows(table, limit=200)
+    if not rows:
+        print("No rows.")
+        return
+    for r in rows:
+        print_row(r)
 
 def cmd_get(parts):
-    if len(parts) < 2:
-        print("Usage: get <id>")
+    if len(parts) < 3:
+        print("Usage: get <table> <id>")
         return
-    try:
-        staff_id = int(parts[1])
-    except ValueError:
-        print("Error: id must be an integer (injection attempts will not work here).")
+    table = parts[1]
+    id_arg = parts[2].strip()
+    # Простая валидация: id должен быть число (если PK числовой)
+    if not id_arg.isdigit():
+        print("Error: id must be digits-only (for safety).")
         return
-    row = db.get_staff(staff_id)
+    pk_val = int(id_arg)
+    row = db.get_row_by_pk(table, pk_val)
     if row:
         print_row(row)
     else:
-        print("Not found.")
+        print("Not found or table has no primary key.")
+
+def cmd_create(parts):
+    if len(parts) < 2:
+        print("Usage: create <table>")
+        return
+    table = parts[1]
+    cols = db.get_table_columns(table)
+    if not cols:
+        print("Table not found or has no columns.")
+        return
+
+    data = {}
+    print("Enter values for new row. Leave empty to insert NULL (if allowed).")
+    for name, dtype, nullable in cols:
+        val = input(f"  {name} ({dtype}) : ").strip()
+        if val == "":
+            data[name] = None
+        else:
+            # Minimal type conversions for int/date (student-level)
+            if dtype in ('integer','bigint','smallint') and val.isdigit():
+                data[name] = int(val)
+            else:
+                # Try date conversion for date-like types (very basic)
+                if dtype == 'date':
+                    try:
+                        data[name] = datetime.strptime(val, "%Y-%m-%d").date()
+                    except ValueError:
+                        data[name] = val
+                else:
+                    data[name] = val
+    ok = db.create_row(table, data)
+    if ok:
+        print("Insert executed (ok).")
+    else:
+        print("Insert failed.")
 
 def cmd_update(parts):
-    if len(parts) < 2:
-        print("Usage: update <id>")
+    if len(parts) < 3:
+        print("Usage: update <table> <id>")
         return
-    try:
-        staff_id = int(parts[1])
-    except ValueError:
-        print("Error: id must be an integer.")
+    table = parts[1]
+    id_arg = parts[2].strip()
+    if not id_arg.isdigit():
+        print("Error: id must be digits-only (for safety).")
         return
-
-    current = db.get_staff(staff_id)
-    if not current:
-        print("Record not found.")
+    pk_val = int(id_arg)
+    row = db.get_row_by_pk(table, pk_val)
+    if not row:
+        print("Not found or table has no primary key.")
         return
+    print("Current values:")
+    print_row(row)
 
-    print("Current values (press Enter to keep):")
-    print_row(current)
-
-    full_name = input(f"  full_name [{current['full_name']}]: ").strip()
-    role = input(f"  role [{current['role']}]: ").strip()
-    email = input(f"  email [{current['email']}]: ").strip()
-    phone = input(f"  phone [{current['phone']}]: ").strip()
-    hired_on_str = input(f"  hired_on [{current['hired_on']} in YYYY-MM-DD]: ").strip()
-
-    hired_on = None
-    if hired_on_str:
-        try:
-            hired_on = datetime.strptime(hired_on_str, "%Y-%m-%d").date()
-        except ValueError:
-            print("Error: hired_on must be in format YYYY-MM-DD.")
-            return
-
-    try:
-        updated = db.update_staff(
-            staff_id,
-            full_name if full_name else None,
-            role if role else None,
-            email if email else None,
-            phone if phone else None,
-            hired_on
-        )
-        if updated:
-            print("Updated:")
-            print_row(updated)
+    cols = db.get_table_columns(table)
+    new_data = {}
+    print("Enter new values. Leave empty to keep current value.")
+    for name, dtype, nullable in cols:
+        cur_val = row.get(name)
+        val = input(f"  {name} ({dtype}) [{cur_val}]: ").strip()
+        if val == "":
+            continue
+        if dtype in ('integer','bigint','smallint') and val.isdigit():
+            new_data[name] = int(val)
         else:
-            print("Update failed: not found.")
+            if dtype == 'date':
+                try:
+                    new_data[name] = datetime.strptime(val, "%Y-%m-%d").date()
+                except ValueError:
+                    new_data[name] = val
+            else:
+                new_data[name] = val
+    if not new_data:
+        print("No changes provided.")
+        return
+    try:
+        ok = db.update_row_by_pk(table, pk_val, new_data)
+        if ok:
+            print("Update successful.")
+        else:
+            print("Update failed.")
     except Exception as e:
-        print("Update failed:", e)
+        print("Update error:", e)
 
 def cmd_delete(parts):
-    if len(parts) < 2:
-        print("Usage: delete <id>")
+    if len(parts) < 3:
+        print("Usage: delete <table> <id>")
         return
-    try:
-        staff_id = int(parts[1])
-    except ValueError:
-        print("Error: id must be an integer.")
+    table = parts[1]
+    id_arg = parts[2].strip()
+    if not id_arg.isdigit():
+        print("Error: id must be digits-only (for safety).")
         return
-
-    row = db.get_staff(staff_id)
+    pk_val = int(id_arg)
+    row = db.get_row_by_pk(table, pk_val)
     if not row:
-        print("Record not found.")
+        print("Not found or table has no primary key.")
         return
-
-    print("You are about to delete:")
+    print("About to delete:")
     print_row(row)
-    confirm = input("Type 'yes' to confirm: ").strip().lower()
-    if confirm != "yes":
-        print("Delete cancelled.")
+    c = input("Type 'yes' to confirm: ").strip().lower()
+    if c != 'yes':
+        print("Cancelled.")
         return
-
     try:
-        deleted = db.delete_staff(staff_id)
-        if deleted:
-            print("Deleted:")
-            print_row(deleted)
+        ok = db.delete_row_by_pk(table, pk_val)
+        if ok:
+            print("Deleted.")
         else:
-            print("Delete failed: not found.")
+            print("Delete failed (maybe FK constraint).")
     except Exception as e:
-        print("Delete failed:", e)
+        print("Delete error (likely FK constraint):", e)
 
-def cmd_query():
-    rows = db.complex_query()
-    print("Complex query results:")
+def cmd_query(parts):
+    if len(parts) < 2:
+        print("Usage: query <table>")
+        return
+    table = parts[1]
+    rows = db.complex_query_example(table)
+    if not rows:
+        print("No results or table doesn't have role/hired_on columns.")
+        return
     for r in rows:
-        print(f"[{r['staff_id']}] {r['full_name']} | {r['role']} | {r['email']} | {r['hired_on']}")
+        print_row(r)
 
 def main():
-    print("Staff CLI (PostgreSQL). Type 'help' for commands.")
+    print("Universal DB CLI. Type 'help' for commands.")
     while True:
         try:
             cmd = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except (KeyboardInterrupt, EOFError):
             print("\nBye.")
             break
-
         if not cmd:
             continue
-
         parts = cmd.split()
         name = parts[0].lower()
-
-        if name == "help":
-            print("Commands: create | list | get <id> | update <id> | delete <id> | query | exit")
-        elif name == "create":
-            cmd_create()
-        elif name == "list":
-            cmd_list()
-        elif name == "get":
+        if name in ('help','h','?'):
+            print("Commands: tables | describe <table> | list <table> | get <table> <id> | create <table> | update <table> <id> | delete <table> <id> | query <table> | exit")
+        elif name == 'tables':
+            cmd_tables()
+        elif name == 'describe':
+            cmd_describe(parts)
+        elif name == 'list':
+            cmd_list(parts)
+        elif name == 'get':
             cmd_get(parts)
-        elif name == "update":
+        elif name == 'create':
+            cmd_create(parts)
+        elif name == 'update':
             cmd_update(parts)
-        elif name == "delete":
+        elif name == 'delete':
             cmd_delete(parts)
-        elif name == "query":
-            cmd_query()
-        elif name == "exit":
+        elif name == 'query':
+            cmd_query(parts)
+        elif name == 'exit':
             print("Bye.")
             break
         else:

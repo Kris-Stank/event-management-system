@@ -1,24 +1,15 @@
-"""
-db.py — Database helper functions for the CLI app.
 
-Simple, beginner-style code with clear comments.
-Uses environment variables for connection details.
-"""
 
 import os
 import sys
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
-# Load .env (optional, but helpful for local dev)
 load_dotenv()
 
 def get_connection():
-    """
-    Create a database connection using env vars.
-    Returns a psycopg2 connection. Exits with a helpful message if failed.
-    """
     try:
         conn = psycopg2.connect(
             host=os.getenv("DB_HOST", "localhost"),
@@ -34,119 +25,180 @@ def get_connection():
         sys.exit(1)
 
 
-def create_staff(full_name, role, email, phone, hired_on):
-    """Insert a new staff row. Returns newly created row as dict."""
-    sql = """
-        INSERT INTO staff (full_name, role, email, phone, hired_on)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING staff_id, full_name, role, email, phone, hired_on;
+# -----------------------
+# Метаданные / помощь
+# -----------------------
+def list_tables():
+    sql_text = """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_type = 'BASE TABLE'
+        ORDER BY table_name;
     """
     with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, (full_name, role, email, phone, hired_on))
-            row = cur.fetchone()
-            conn.commit()
-            return row
-
-
-def list_staff():
-    """Return all staff rows ordered by staff_id."""
-    sql = """
-        SELECT staff_id, full_name, role, email, phone, hired_on
-        FROM staff
-        ORDER BY staff_id;
-    """
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(sql_text)
+            rows = [r[0] for r in cur.fetchall()]
             return rows
 
 
-def get_staff(staff_id):
-    """Return one staff row by id, or None if not found."""
-    sql = """
-        SELECT staff_id, full_name, role, email, phone, hired_on
-        FROM staff
-        WHERE staff_id = %s;
+def get_table_columns(table):
+    sql_text = sql.SQL("""
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position;
+    """)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_text, (table,))
+            return cur.fetchall()
+
+
+def get_primary_key_column(table):
+    sql_text = """
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_name = tc.constraint_name
+         AND kcu.constraint_schema = tc.constraint_schema
+        WHERE tc.constraint_type = 'PRIMARY KEY'
+          AND tc.table_schema = 'public'
+          AND tc.table_name = %s;
     """
     with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, (staff_id,))
+        with conn.cursor() as cur:
+            cur.execute(sql_text, (table,))
             row = cur.fetchone()
-            return row
+            return row[0] if row else None
 
 
-def update_staff(staff_id, full_name=None, role=None, email=None, phone=None, hired_on=None):
-    """
-    Update fields if the user provided new values; keep existing if None.
-    Returns updated row or None if not found.
-    """
+# -----------------------
+# CRUD для любой таблицы
+# -----------------------
+def list_rows(table, limit=100):
+    q = sql.SQL("SELECT * FROM {tbl} ORDER BY 1 LIMIT %s").format(
+        tbl=sql.Identifier(table)
+    )
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Get current values first
-            cur.execute("""
-                SELECT staff_id, full_name, role, email, phone, hired_on
-                FROM staff WHERE staff_id = %s;
-            """, (staff_id,))
-            current = cur.fetchone()
-            if not current:
-                return None
-
-            # Use new value if provided, otherwise keep the old one
-            new_full_name = full_name if full_name else current["full_name"]
-            new_role = role if role else current["role"]
-            new_email = email if email else current["email"]
-            new_phone = phone if phone else current["phone"]
-            new_hired_on = hired_on if hired_on else current["hired_on"]
-
-            cur.execute("""
-                UPDATE staff
-                SET full_name = %s,
-                    role = %s,
-                    email = %s,
-                    phone = %s,
-                    hired_on = %s
-                WHERE staff_id = %s
-                RETURNING staff_id, full_name, role, email, phone, hired_on;
-            """, (new_full_name, new_role, new_email, new_phone, new_hired_on, staff_id))
-            updated = cur.fetchone()
-            conn.commit()
-            return updated
+            cur.execute(q, (limit,))
+            return cur.fetchall()
 
 
-def delete_staff(staff_id):
-    """Delete a row by id. Returns the deleted row (for evidence) or None if not found."""
+def get_row_by_pk(table, pk_value):
+    pk_col = get_primary_key_column(table)
+    if not pk_col:
+        return None  # нет первичного ключа
+    q = sql.SQL("SELECT * FROM {tbl} WHERE {pk} = %s").format(
+        tbl=sql.Identifier(table),
+        pk=sql.Identifier(pk_col)
+    )
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # fetch first (for evidence screenshot)
-            cur.execute("""
-                SELECT staff_id, full_name, role, email, phone, hired_on
-                FROM staff WHERE staff_id = %s;
-            """, (staff_id,))
-            row = cur.fetchone()
-            if not row:
-                return None
+            cur.execute(q, (pk_value,))
+            return cur.fetchone()
 
-            cur.execute("DELETE FROM staff WHERE staff_id = %s;", (staff_id,))
+
+def create_row(table, data: dict):
+    if not data:
+        raise ValueError("No data provided")
+
+    cols = [sql.Identifier(c) for c in data.keys()]
+    vals_placeholders = sql.SQL(", ").join(sql.Placeholder() * len(data))
+    cols_sql = sql.SQL(", ").join(cols)
+
+    insert = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES ({vals})").format(
+        tbl=sql.Identifier(table),
+        cols=cols_sql,
+        vals=vals_placeholders
+    )
+
+    params = tuple(data.values())
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(insert, params)
+            # Попытка вернуть вставленную строку по PK, если есть PK и он был сгенерирован.
+            pk_col = get_primary_key_column(table)
+            if pk_col:
+                # Если PK — serial, можно попытаться получить lastval, но это ненадёжно для общей таблицы.
+                # Поэтому просто попытаемся найти по сочетанию уникальных полей — но для простоты вернём True.
+                conn.commit()
+                return True
             conn.commit()
-            return row
+            return True
 
 
-def complex_query():
-    """
-    Example complex SELECT with AND/OR.
-    Matches the assignment’s requirement.
-    """
-    sql = """
-        SELECT staff_id, full_name, role, email, hired_on
-        FROM staff
+def update_row_by_pk(table, pk_value, new_data: dict):
+    pk_col = get_primary_key_column(table)
+    if not pk_col:
+        return False
+
+    if not new_data:
+        return False
+
+    set_parts = []
+    params = []
+    for k, v in new_data.items():
+        set_parts.append(sql.SQL("{col} = %s").format(col=sql.Identifier(k)))
+        params.append(v)
+    params.append(pk_value)
+
+    q = sql.SQL("UPDATE {tbl} SET {sets} WHERE {pk} = %s").format(
+        tbl=sql.Identifier(table),
+        sets=sql.SQL(", ").join(set_parts),
+        pk=sql.Identifier(pk_col)
+    )
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, tuple(params))
+            updated = cur.rowcount
+            conn.commit()
+            return updated > 0
+
+
+def delete_row_by_pk(table, pk_value):
+    pk_col = get_primary_key_column(table)
+    if not pk_col:
+        return False
+
+    q = sql.SQL("DELETE FROM {tbl} WHERE {pk} = %s").format(
+        tbl=sql.Identifier(table),
+        pk=sql.Identifier(pk_col)
+    )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(q, (pk_value,))
+                deleted = cur.rowcount
+                conn.commit()
+                return deleted > 0
+            except psycopg2.Error as e:
+                conn.rollback()
+                # Пробрасываем исключение дальше, чтобы интерфейс мог показать сообщение
+                raise
+
+
+# -----------------------
+# Пример сложного запроса (можно оставить по-табличному)
+# -----------------------
+def complex_query_example(table):
+    cols = [c[0] for c in get_table_columns(table)]
+    if 'role' not in cols or 'hired_on' not in cols:
+        return []
+
+    q = sql.SQL("""
+        SELECT * FROM {tbl}
         WHERE (role = 'intern' AND hired_on >= DATE '2024-01-01')
            OR (role ILIKE '%manager%' AND hired_on < DATE '2023-01-01')
-        ORDER BY hired_on DESC;
-    """
+        ORDER BY hired_on DESC
+        LIMIT 200
+    """).format(tbl=sql.Identifier(table))
+
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-            return rows
+            cur.execute(q)
+            return cur.fetchall()
