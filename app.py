@@ -94,22 +94,25 @@ def cmd_create(parts):
     data = {}
     print("Enter values for new row. Leave empty to insert NULL (if allowed).")
     for name, dtype, nullable in cols:
+    # если столбец заканчивается на "_id", пропускаем его
+        if name.endswith("_id"):
+            continue  
+
         val = input(f"  {name} ({dtype}) : ").strip()
         if val == "":
             data[name] = None
         else:
-            # Minimal type conversions for int/date (student-level)
-            if dtype in ('integer','bigint','smallint') and val.isdigit():
+            if dtype in ('integer', 'bigint', 'smallint') and val.isdigit():
                 data[name] = int(val)
-            else:
-                # Try date conversion for date-like types (very basic)
-                if dtype == 'date':
-                    try:
-                        data[name] = datetime.strptime(val, "%Y-%m-%d").date()
-                    except ValueError:
-                        data[name] = val
-                else:
+            elif dtype == 'date':
+                try:
+                    data[name] = datetime.strptime(val, "%Y-%m-%d").date()
+                except ValueError:
                     data[name] = val
+            else:
+                data[name] = val
+
+
     ok = db.create_row(table, data)
     if ok:
         print("Insert executed (ok).")
