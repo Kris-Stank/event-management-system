@@ -1,18 +1,3 @@
-"""
-app.py — Универсальный CLI для работы с любой таблицей в БД.
-
-Команды:
-  tables                      -> список таблиц
-  describe <table>            -> список столбцов и типов
-  list <table>                -> показать первые 100 строк таблицы
-  get <table> <id>            -> получить строку по первичному ключу
-  create <table>              -> создать строку (спросит значения полей)
-  update <table> <id>         -> обновить строку по PK (покажет текущие значения)
-  delete <table> <id>         -> удалить строку по PK (подтверждение)
-  query <table>               -> пример сложного SELECT (если есть role/hired_on)
-  help / exit
-"""
-
 import sys
 import db
 from datetime import datetime
@@ -21,7 +6,6 @@ def print_row(row):
     if not row:
         print("No data.")
         return
-    # row может быть dict (RealDictCursor)
     if isinstance(row, dict):
         items = [f"{k}={v}" for k, v in row.items()]
         print(", ".join(items))
@@ -70,7 +54,6 @@ def cmd_get(parts):
         return
     table = parts[1]
     id_arg = parts[2].strip()
-    # Простая валидация: id должен быть число (если PK числовой)
     if not id_arg.isdigit():
         print("Error: id must be digits-only (for safety).")
         return
@@ -94,7 +77,6 @@ def cmd_create(parts):
     data = {}
     print("Enter values for new row. Leave empty to insert NULL (if allowed).")
     for name, dtype, nullable in cols:
-    # если столбец заканчивается на "_id", пропускаем его
         if name.endswith("_id"):
             continue  
 

@@ -25,9 +25,7 @@ def get_connection():
         sys.exit(1)
 
 
-# -----------------------
-# Метаданные / помощь
-# -----------------------
+
 def list_tables():
     sql_text = """
         SELECT table_name
@@ -74,9 +72,6 @@ def get_primary_key_column(table):
             return row[0] if row else None
 
 
-# -----------------------
-# CRUD для любой таблицы
-# -----------------------
 def list_rows(table, limit=100):
     q = sql.SQL("SELECT * FROM {tbl} ORDER BY 1 LIMIT %s").format(
         tbl=sql.Identifier(table)
@@ -120,11 +115,8 @@ def create_row(table, data: dict):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(insert, params)
-            # Попытка вернуть вставленную строку по PK, если есть PK и он был сгенерирован.
             pk_col = get_primary_key_column(table)
             if pk_col:
-                # Если PK — serial, можно попытаться получить lastval, но это ненадёжно для общей таблицы.
-                # Поэтому просто попытаемся найти по сочетанию уникальных полей — но для простоты вернём True.
                 conn.commit()
                 return True
             conn.commit()
@@ -178,13 +170,9 @@ def delete_row_by_pk(table, pk_value):
                 return deleted > 0
             except psycopg2.Error as e:
                 conn.rollback()
-                # Пробрасываем исключение дальше, чтобы интерфейс мог показать сообщение
                 raise
 
 
-# -----------------------
-# Пример сложного запроса (можно оставить по-табличному)
-# -----------------------
 def complex_query_example(table):
     cols = [c[0] for c in get_table_columns(table)]
     if 'role' not in cols or 'hired_on' not in cols:
